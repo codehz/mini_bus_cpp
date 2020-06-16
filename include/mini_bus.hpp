@@ -10,13 +10,14 @@
 #include <mutex>
 #include <boost/asio.hpp>
 
+namespace mini_bus {
+namespace details {
+
 constexpr int repr_impl(char const *str, int step = 4, int val = 0) {
   return step == 0 ? val : repr_impl(str + 1, step - 1, val | (*str << ((4 - step) * 8)));
 }
 
 constexpr int repr(char const *str) { return repr_impl(str); }
-
-using namespace boost::asio;
 
 template <typename Stream> size_t read_exactly(Stream &stream, char *buf, size_t len) {
   return read(stream, buffer(buf, len), transfer_all());
@@ -25,6 +26,10 @@ template <typename Stream> size_t read_exactly(Stream &stream, char *buf, size_t
 template <typename Stream, size_t size> size_t read_exactly(Stream &stream, char (&buf)[size]) {
   return read_exactly(stream, buf, size);
 }
+
+} // namespace details
+
+using namespace boost::asio;
 
 struct IBaseNotifyToken {
   virtual ~IBaseNotifyToken() {}
@@ -167,17 +172,17 @@ template <typename Stream> class MiniBusPacketDecoder {
 
   uint64_t read_varuint() {
     char size[1];
-    read_exactly(stream, size);
+    details::read_exactly(stream, size);
     if (size[0] < 128) return size[0];
     return (((int64_t) size[0] | 0b01111111) << 7) + read_varuint();
   }
 
   std::string read_short_binary() {
     char sizearr[1];
-    read_exactly(stream, sizearr);
+    details::read_exactly(stream, sizearr);
     std::string buf;
     buf.resize(sizearr[0], 0);
-    read_exactly(stream, buf.data(), sizearr[0]);
+    details::read_exactly(stream, buf.data(), sizearr[0]);
     return buf;
   }
 
@@ -185,7 +190,7 @@ template <typename Stream> class MiniBusPacketDecoder {
     auto size = read_varuint();
     std::string buf;
     buf.resize(size, 0);
-    read_exactly(stream, buf.data(), size);
+    details::read_exactly(stream, buf.data(), size);
     return buf;
   }
 
@@ -218,7 +223,7 @@ public:
         unsigned char flag;
       };
     } u;
-    read_exactly(stream, u.buffer);
+    details::read_exactly(stream, u.buffer);
     auto body = decode_body(u.flag);
     return {u.rid, u.type, std::move(body)};
   }
@@ -288,7 +293,7 @@ class MiniBusClient {
         auto data = decoder.decode();
         std::lock_guard lock{mtx};
         switch (data.type) {
-        case repr("RESP"): {
+        case details::repr("RESP"): {
           auto it = reqmap.find(data.rid);
           if (it == reqmap.end()) continue;
           auto [k, v] = *it;
@@ -299,14 +304,14 @@ class MiniBusClient {
             v->failed(std::make_exception_ptr(MiniBusException{*data.pkt.payload()}));
           }
         } break;
-        case repr("NEXT"): {
+        case details::repr("NEXT"): {
           if (data.pkt.ok()) {
             evtmap[data.rid](*data.pkt.payload());
           } else {
             evtmap.erase(data.rid);
           }
         } break;
-        case repr("CALL"): {
+        case details::repr("CALL"): {
           std::string_view sv = *data.pkt.payload();
           if (sv.length() < 1) throw std::runtime_error("Unexcepted call");
           auto len = sv[0];
@@ -342,7 +347,7 @@ public:
 
     write(socket, buffer("MINIBUS"), transfer_all());
     char ok[2];
-    read_exactly(socket, ok);
+    details::read_exactly(socket, ok);
     if (memcmp(&ok[0], "OK", 2) != 0) throw std::runtime_error{"ProtocolError"};
 
     work_thread = std::make_unique<std::thread>([this] { worker(); });
@@ -492,3 +497,5 @@ public:
 
   void join() { work_thread->join(); }
 };
+
+} // namespace mini_bus

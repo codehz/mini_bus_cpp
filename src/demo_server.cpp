@@ -4,6 +4,7 @@
 #include <mini_bus.hpp>
 
 int main(int argc, char *argv[]) {
+  using namespace mini_bus;
   using namespace std::chrono_literals;
   try {
     io_service service;
