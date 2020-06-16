@@ -1,8 +1,10 @@
 #include <iostream>
+#include <chrono>
 
 #include <mini_bus.hpp>
 
 int main(int argc, char *argv[]) {
+  using namespace std::chrono_literals;
   try {
     io_service service;
     MiniBusClient client{service, ip::address::from_string("127.0.0.1"), 4040};
@@ -18,13 +20,21 @@ int main(int argc, char *argv[]) {
 
     for (auto &[k, v] : client.keys("shared")) { std::cout << "kv: " << v << (int) k << std::endl; }
 
-    std::cout << "waiting" << std::endl;
+    client.listen("demo", "event", [](auto data) { std::cout << "event: " << data << std::endl; });
 
     NotifyToken<int> tok;
-    client.observe("registry", "demo", [&](auto sv) { tok.notify(0); });
 
-    tok.wait();
+    try {
+      client.get("registry", "demo");
+    } catch (...) {
+      std::cout << "waiting" << std::endl;
+      NotifyToken<int> tok;
+      client.observe("registry", "demo", [&](auto sv) { tok.notify(0); });
+      tok.wait();
+    }
 
     std::cout << "call" << client.call("demo", "echo", "boom") << std::endl;
+
+    std::this_thread::sleep_for(10s);
   } catch (std::exception &e) { std::cout << e.what() << std::endl; }
 }
