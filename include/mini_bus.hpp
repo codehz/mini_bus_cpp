@@ -64,7 +64,7 @@ public:
     }
     cv.notify_one();
   }
-  inline void filed(std::exception_ptr ptr) {
+  inline void failed(std::exception_ptr ptr) override {
     {
       std::lock_guard lock{mtx};
       ex = ptr;
@@ -76,14 +76,14 @@ public:
 template <typename T> class SyncNotifyToken : public NotifyToken<T> {
 public:
   inline void notify(T &&rhs) override {
-    NotifyToken::notify(std::move(rhs));
-    std::unique_lock lock{mtx};
-    cv.wait(lock, [this] { return !value.has_value(); });
+    NotifyToken<T>::notify(std::move(rhs));
+    std::unique_lock lock{this->mtx};
+    this->cv.wait(lock, [this] { return !this->value.has_value(); });
   }
 
   inline void notifySource() {
-    reset();
-    cv.notify_one();
+    this->reset();
+    this->cv.notify_one();
   }
 };
 
