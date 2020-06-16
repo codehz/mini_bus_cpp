@@ -19,11 +19,11 @@ constexpr int repr_impl(char const *str, int step = 4, int val = 0) {
 
 constexpr int repr(char const *str) { return repr_impl(str); }
 
-template <typename Stream> size_t read_exactly(Stream &stream, char *buf, size_t len) {
+template <typename Stream> inline size_t read_exactly(Stream &stream, char *buf, size_t len) {
   return read(stream, buffer(buf, len), transfer_all());
 }
 
-template <typename Stream, size_t size> size_t read_exactly(Stream &stream, char (&buf)[size]) {
+template <typename Stream, size_t size> inline size_t read_exactly(Stream &stream, char (&buf)[size]) {
   return read_exactly(stream, buf, size);
 }
 
@@ -32,7 +32,7 @@ template <typename Stream, size_t size> size_t read_exactly(Stream &stream, char
 using namespace boost::asio;
 
 struct IBaseNotifyToken {
-  virtual ~IBaseNotifyToken() {}
+  inline virtual ~IBaseNotifyToken() {}
   virtual void failed(std::exception_ptr ptr) = 0;
 };
 
@@ -46,25 +46,25 @@ protected:
   std::exception_ptr ex;
 
 public:
-  void reset() {
+  inline void reset() {
     std::lock_guard lock{mtx};
     value.reset();
     ex = nullptr;
   }
-  T wait() {
+  inline T wait() {
     std::unique_lock lock{mtx};
     cv.wait(lock, [this] { return ex || value.has_value(); });
     if (ex) std::rethrow_exception(ex);
     return *value;
   }
-  void notify(T &&rhs) override {
+  inline void notify(T &&rhs) override {
     {
       std::lock_guard lock{mtx};
       value.emplace(std::move(rhs));
     }
     cv.notify_one();
   }
-  void failed(std::exception_ptr ptr) {
+  inline void filed(std::exception_ptr ptr) {
     {
       std::lock_guard lock{mtx};
       ex = ptr;
@@ -75,13 +75,13 @@ public:
 
 template <typename T> class SyncNotifyToken : public NotifyToken<T> {
 public:
-  void notify(T &&rhs) override {
+  inline void notify(T &&rhs) override {
     NotifyToken::notify(std::move(rhs));
     std::unique_lock lock{mtx};
     cv.wait(lock, [this] { return !value.has_value(); });
   }
 
-  void notifySource() {
+  inline void notifySource() {
     reset();
     cv.notify_one();
   }
@@ -91,14 +91,14 @@ class MiniBusEncoder {
   std::string buffer;
 
 public:
-  std::string_view view() const { return buffer; }
+  inline std::string_view view() const { return buffer; }
 
-  void insert_short_string(std::string_view str) {
+  inline void insert_short_string(std::string_view str) {
     buffer += (unsigned char) str.length();
     buffer += str;
   }
 
-  void insert_varuint(uint64_t vuit) {
+  inline void insert_varuint(uint64_t vuit) {
     buffer.reserve(buffer.size() + vuit + 16);
     while (true) {
       if (vuit < 128) {
@@ -110,17 +110,17 @@ public:
     }
   }
 
-  void insert_long_string(std::string_view str) {
+  inline void insert_long_string(std::string_view str) {
     insert_varuint(str.length());
     buffer += str;
   }
 
-  void insert_rid(uint32_t rid) { buffer.append((char *) &rid, sizeof rid); }
+  inline void insert_rid(uint32_t rid) { buffer.append((char *) &rid, sizeof rid); }
 };
 
 class MiniBusException : public std::runtime_error {
 public:
-  MiniBusException(std::string data) : runtime_error(data) {}
+  inline MiniBusException(std::string data) : runtime_error(data) {}
 };
 
 class MiniBusPacket {
@@ -128,56 +128,25 @@ class MiniBusPacket {
   std::optional<std::string> m_payload;
 
 public:
-  MiniBusPacket(bool is_ok, std::optional<std::string> m_payload = {}) : is_ok(is_ok), m_payload(m_payload) {}
+  inline MiniBusPacket(bool is_ok, std::optional<std::string> m_payload = {}) : is_ok(is_ok), m_payload(m_payload) {}
 
-  bool ok() const noexcept { return is_ok; }
-  bool has_payload() const noexcept { return m_payload.has_value(); }
-  std::optional<std::string> const &payload() const { return m_payload; }
-  std::optional<std::string> &payload() { return m_payload; }
+  inline bool ok() const noexcept { return is_ok; }
+  inline bool has_payload() const noexcept { return m_payload.has_value(); }
+  inline std::optional<std::string> const &payload() const { return m_payload; }
+  inline std::optional<std::string> &payload() { return m_payload; }
 };
-
-// class MiniBusPacket {
-// public:
-//  virtual ~MiniBusPacket() {}
-//  virtual bool ok() const noexcept = 0;
-//};
-//
-// class MiniBusOkPacket : public MiniBusPacket {
-// public:
-//  virtual bool ok() const noexcept override { return true; }
-//  virtual bool has_payload() const noexcept { return false; }
-//};
-//
-// class MiniBusOkWithPayloadPacket : public MiniBusOkPacket {
-//  std::string m_payload;
-//
-// public:
-//  MiniBusOkWithPayloadPacket(std::string value) : m_payload(std::move(value)) {}
-//  virtual bool has_payload() const noexcept override { return true; }
-//  virtual std::string const &payload() const noexcept { return m_payload; }
-//};
-//
-// class MiniBusErrorPacket : public MiniBusOkPacket {
-//  std::string m_payload;
-//
-// public:
-//  MiniBusErrorPacket(std::string value) : m_payload(std::move(value)) {}
-//  virtual bool ok() const noexcept override { return false; }
-//  virtual bool has_payload() const noexcept override { return true; }
-//  virtual std::string const &payload() const noexcept { return m_payload; }
-//};
 
 template <typename Stream> class MiniBusPacketDecoder {
   Stream &stream;
 
-  uint64_t read_varuint() {
+  inline uint64_t read_varuint() {
     char size[1];
     details::read_exactly(stream, size);
     if (size[0] < 128) return size[0];
     return (((int64_t) size[0] | 0b01111111) << 7) + read_varuint();
   }
 
-  std::string read_short_binary() {
+  inline std::string read_short_binary() {
     char sizearr[1];
     details::read_exactly(stream, sizearr);
     std::string buf;
@@ -186,7 +155,7 @@ template <typename Stream> class MiniBusPacketDecoder {
     return buf;
   }
 
-  std::string read_long_binary() {
+  inline std::string read_long_binary() {
     auto size = read_varuint();
     std::string buf;
     buf.resize(size, 0);
@@ -195,11 +164,11 @@ template <typename Stream> class MiniBusPacketDecoder {
   }
 
 public:
-  MiniBusPacketDecoder(Stream &stream) : stream(stream) {}
+  inline MiniBusPacketDecoder(Stream &stream) : stream(stream) {}
 
-  std::string decode_payload() { return read_long_binary(); }
+  inline std::string decode_payload() { return read_long_binary(); }
 
-  MiniBusPacket decode_body(unsigned char flag) {
+  inline MiniBusPacket decode_body(unsigned char flag) {
     switch (flag) {
     case 0: return {true};
     case 1: return {true, decode_payload()};
@@ -214,7 +183,7 @@ public:
     MiniBusPacket pkt;
   };
 
-  data decode() {
+  inline data decode() {
     union {
       char buffer[9];
       struct {
@@ -239,7 +208,7 @@ class MiniBusClient {
   ip::tcp::socket socket;
   std::unique_ptr<std::thread> work_thread;
 
-  uint32_t select_rid() {
+  inline uint32_t select_rid() {
     while (true) {
       uint32_t ret = dist(rd);
       if (reqmap.count(ret) != 0) continue;
@@ -247,7 +216,7 @@ class MiniBusClient {
     }
   }
 
-  std::shared_ptr<NotifyToken<std::optional<std::string>>>
+  inline std::shared_ptr<NotifyToken<std::optional<std::string>>>
   send_simple(std::string_view command, std::string_view payload = {}) {
     std::unique_lock lock{mtx};
     auto rid = select_rid();
@@ -262,7 +231,7 @@ class MiniBusClient {
     return tok;
   }
 
-  std::shared_ptr<SyncNotifyToken<std::optional<std::string>>>
+  inline std::shared_ptr<SyncNotifyToken<std::optional<std::string>>>
   send_event(std::string_view command, std::string_view payload, uint32_t &rid) {
     std::unique_lock lock{mtx};
     rid = select_rid();
@@ -277,7 +246,7 @@ class MiniBusClient {
     return tok;
   }
 
-  void send_response(uint32_t rid, std::string_view command, std::string_view payload) {
+  inline void send_response(uint32_t rid, std::string_view command, std::string_view payload) {
     MiniBusEncoder encoder;
     encoder.insert_rid(rid);
     encoder.insert_short_string(command);
@@ -286,7 +255,7 @@ class MiniBusClient {
     write(socket, buffer(view), transfer_all());
   }
 
-  void worker() {
+  inline void worker() {
     try {
       MiniBusPacketDecoder decoder{socket};
       while (true) {
@@ -342,7 +311,7 @@ public:
     Public,
   };
 
-  MiniBusClient(io_service &io, ip::address address, unsigned short port) : socket(io) {
+  inline MiniBusClient(io_service &io, ip::address address, unsigned short port) : socket(io) {
     socket.connect(ip::tcp::endpoint{address, port});
 
     write(socket, buffer("MINIBUS"), transfer_all());
@@ -353,20 +322,20 @@ public:
     work_thread = std::make_unique<std::thread>([this] { worker(); });
   }
 
-  ~MiniBusClient() {
+  inline ~MiniBusClient() {
     socket.close();
     if (work_thread && work_thread->joinable()) work_thread->join();
   }
 
-  void register_handler(std::string const &name, std::function<std::string_view(std::string_view)> fn) {
+  inline void register_handler(std::string const &name, std::function<std::string_view(std::string_view)> fn) {
     fnmap.emplace(name, fn);
   }
 
-  std::string ping(std::string_view payload = {}) { return *send_simple("PING", payload)->wait(); }
+  inline std::string ping(std::string_view payload = {}) { return *send_simple("PING", payload)->wait(); }
 
-  void stop() { send_simple("STOP")->wait(); }
+  inline void stop() { send_simple("STOP")->wait(); }
 
-  void set_private(std::string_view key, std::string_view value) {
+  inline void set_private(std::string_view key, std::string_view value) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     oss << value;
@@ -374,21 +343,21 @@ public:
     send_simple("SET PRIVATE", buf)->wait();
   }
 
-  std::string get_private(std::string_view key) {
+  inline std::string get_private(std::string_view key) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     auto buf = oss.str();
     return *send_simple("GET PRIVATE", buf)->wait();
   }
 
-  void del_private(std::string_view key) {
+  inline void del_private(std::string_view key) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     auto buf = oss.str();
     send_simple("DEL PRIVATE", buf)->wait();
   }
 
-  void acl(std::string_view key, ACL acl) {
+  inline void acl(std::string_view key, ACL acl) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     switch (acl) {
@@ -401,7 +370,7 @@ public:
     send_simple("DEL PRIVATE", buf)->wait();
   }
 
-  void notify(std::string_view key, std::string_view value) {
+  inline void notify(std::string_view key, std::string_view value) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     oss << value;
@@ -409,7 +378,7 @@ public:
     send_simple("NOTIFY", buf)->wait();
   }
 
-  void set(std::string_view bucket, std::string_view key, std::string_view value) {
+  inline void set(std::string_view bucket, std::string_view key, std::string_view value) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     oss << (unsigned char) key.length() << key;
@@ -418,7 +387,7 @@ public:
     send_simple("SET", buf)->wait();
   }
 
-  std::string get(std::string_view bucket, std::string_view key) {
+  inline std::string get(std::string_view bucket, std::string_view key) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     oss << (unsigned char) key.length() << key;
@@ -426,7 +395,7 @@ public:
     return *send_simple("GET", buf)->wait();
   }
 
-  void del(std::string_view bucket, std::string_view key) {
+  inline void del(std::string_view bucket, std::string_view key) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     oss << (unsigned char) key.length() << key;
@@ -434,7 +403,7 @@ public:
     send_simple("DEL", buf)->wait();
   }
 
-  std::list<std::tuple<ACL, std::string>> keys(std::string_view bucket) {
+  inline std::list<std::tuple<ACL, std::string>> keys(std::string_view bucket) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     auto buf = oss.str();
@@ -462,7 +431,7 @@ public:
     return ret;
   }
 
-  std::string call(std::string_view bucket, std::string_view key, std::string_view value) {
+  inline std::string call(std::string_view bucket, std::string_view key, std::string_view value) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     oss << (unsigned char) key.length() << key;
@@ -471,7 +440,7 @@ public:
     return *send_simple("CALL", buf)->wait();
   }
 
-  void observe(std::string_view bucket, std::string_view key, std::function<void(std::string_view)> cb) {
+  inline void observe(std::string_view bucket, std::string_view key, std::function<void(std::string_view)> cb) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     oss << (unsigned char) key.length() << key;
@@ -483,7 +452,7 @@ public:
     tok->notifySource();
   }
 
-  void listen(std::string_view bucket, std::string_view key, std::function<void(std::string_view)> cb) {
+  inline void listen(std::string_view bucket, std::string_view key, std::function<void(std::string_view)> cb) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     oss << (unsigned char) key.length() << key;
@@ -495,7 +464,7 @@ public:
     tok->notifySource();
   }
 
-  void join() { work_thread->join(); }
+  inline void join() { work_thread->join(); }
 };
 
 } // namespace mini_bus
