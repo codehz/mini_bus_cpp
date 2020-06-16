@@ -323,7 +323,8 @@ public:
   }
 
   inline ~MiniBusClient() {
-    socket.close();
+    boost::system::error_code ec;
+    socket.close(ec);
     if (work_thread && work_thread->joinable()) work_thread->join();
   }
 
