@@ -105,7 +105,7 @@ public:
         buffer += (unsigned char) vuit;
         break;
       }
-      buffer += (unsigned char) (0b1000000 | (vuit & 0b01111111));
+      buffer += (unsigned char) (0b10000000 | (vuit & 0b01111111));
       vuit >>= 7;
     }
   }
