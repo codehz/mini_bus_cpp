@@ -13,7 +13,7 @@ int main(int argc, char *argv[]) {
 
     client.observe("shared", "key", [](std::string_view sv) { std::cout << "update: " << sv << std::endl; });
 
-    client.ping("test");
+    client.ping(std::string(1024, 'a'));
     client.set("shared", "key", "value");
     std::cout << "v: " << client.get("shared", "key") << std::endl;
 

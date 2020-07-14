@@ -140,18 +140,22 @@ template <typename Stream> class MiniBusPacketDecoder {
   Stream &stream;
 
   inline uint64_t read_varuint() {
-    char size[1];
-    details::read_exactly(stream, size);
-    if (size[0] < 128) return size[0];
-    return (((int64_t) size[0] | 0b01111111) << 7) + read_varuint();
+    char ssize[1];
+    details::read_exactly(stream, ssize);
+    unsigned char size = (unsigned char) ssize[0];
+    if (size < 128) return size;
+    auto ret = ((int64_t) size & 0b01111111);
+    ret += read_varuint() << 7;
+    return ret;
   }
 
   inline std::string read_short_binary() {
     char sizearr[1];
     details::read_exactly(stream, sizearr);
+    unsigned char size = (unsigned char) ssize[0];
     std::string buf;
-    buf.resize(sizearr[0], 0);
-    details::read_exactly(stream, buf.data(), sizearr[0]);
+    buf.resize(size, 0);
+    details::read_exactly(stream, buf.data(), size);
     return buf;
   }
 
