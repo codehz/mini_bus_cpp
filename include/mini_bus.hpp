@@ -8,10 +8,14 @@
 #include <random>
 #include <thread>
 #include <mutex>
+#include <optional>
+#include <list>
 #include <boost/asio.hpp>
 
 namespace mini_bus {
 namespace details {
+
+using namespace boost::asio;
 
 constexpr int repr_impl(char const *str, int step = 4, int val = 0) {
   return step == 0 ? val : repr_impl(str + 1, step - 1, val | (*str << ((4 - step) * 8)));
@@ -150,8 +154,8 @@ template <typename Stream> class MiniBusPacketDecoder {
   }
 
   inline std::string read_short_binary() {
-    char sizearr[1];
-    details::read_exactly(stream, sizearr);
+    char ssize[1];
+    details::read_exactly(stream, ssize);
     unsigned char size = (unsigned char) ssize[0];
     std::string buf;
     buf.resize(size, 0);
