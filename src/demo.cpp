@@ -11,7 +11,9 @@ int main(int argc, char *argv[]) {
     MiniBusClient client{service, ip::address::from_string("127.0.0.1"), 4040};
     std::cout << "connected" << std::endl;
 
-    client.observe("shared", "key", [](std::string_view sv) { std::cout << "update: " << sv << std::endl; });
+    client.observe("shared", "key", [](auto sv) {
+      if (sv) std::cout << "update: " << *sv << std::endl;
+    });
 
     client.ping(std::string(1024, 'a'));
     client.set("shared", "key", "value");
@@ -21,7 +23,9 @@ int main(int argc, char *argv[]) {
 
     for (auto &[k, v] : client.keys("shared")) { std::cout << "kv: " << v << (int) k << std::endl; }
 
-    client.listen("demo", "event", [](auto data) { std::cout << "event: " << data << std::endl; });
+    client.listen("demo", "event", [](auto data) {
+      if (data) std::cout << "event: " << *data << std::endl;
+    });
 
     NotifyToken<int> tok;
 

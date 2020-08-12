@@ -1,4 +1,5 @@
 #include <sstream>
+#include <iostream>
 #include <variant>
 #include <optional>
 #include <string>
@@ -104,11 +105,14 @@ public:
 
   inline void insert_varuint(uint64_t vuit) {
     buffer.reserve(buffer.size() + vuit + 16);
+    std::cout << "size: " << vuit << std::endl;
     while (true) {
       if (vuit < 128) {
+        std::cout << vuit << std::endl;
         buffer += (unsigned char) vuit;
         break;
       }
+      std::cout << (0b10000000 | (vuit & 0b01111111)) << std::endl;
       buffer += (unsigned char) (0b10000000 | (vuit & 0b01111111));
       vuit >>= 7;
     }
@@ -211,7 +215,7 @@ class MiniBusClient {
   std::uniform_int_distribution<uint32_t> dist;
   std::mutex mtx;
   std::map<uint64_t, std::shared_ptr<NotifyToken<std::optional<std::string>>>> reqmap;
-  std::map<uint64_t, std::function<void(std::string_view)>> evtmap;
+  std::map<uint64_t, std::function<void(std::optional<std::string>)>> evtmap;
   std::map<std::string, std::function<std::string_view(std::string_view)>, std::less<>> fnmap;
   ip::tcp::socket socket;
   std::unique_ptr<std::thread> work_thread;
@@ -283,7 +287,7 @@ class MiniBusClient {
         } break;
         case details::repr("NEXT"): {
           if (data.pkt.ok()) {
-            evtmap[data.rid](*data.pkt.payload());
+            evtmap[data.rid](data.pkt.payload());
           } else {
             evtmap.erase(data.rid);
           }
@@ -449,7 +453,8 @@ public:
     return *send_simple("CALL", buf)->wait();
   }
 
-  inline void observe(std::string_view bucket, std::string_view key, std::function<void(std::string_view)> cb) {
+  inline void
+  observe(std::string_view bucket, std::string_view key, std::function<void(std::optional<std::string_view>)> cb) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     oss << (unsigned char) key.length() << key;
@@ -461,7 +466,8 @@ public:
     tok->notifySource();
   }
 
-  inline void listen(std::string_view bucket, std::string_view key, std::function<void(std::string_view)> cb) {
+  inline void
+  listen(std::string_view bucket, std::string_view key, std::function<void(std::optional<std::string_view>)> cb) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     oss << (unsigned char) key.length() << key;
