@@ -5,7 +5,9 @@ project(MiniBusCpp)
 set(CMAKE_CXX_STANDARD 17)
 
 find_package(Threads REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system)
+if(NOT TARGET Boost::system)
+    find_package(Boost REQUIRED COMPONENTS system)
+endif()
 
 add_library(mini_bus INTERFACE)
 target_include_directories(mini_bus INTERFACE include/)
