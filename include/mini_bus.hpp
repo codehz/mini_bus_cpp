@@ -1,5 +1,4 @@
 #include <sstream>
-#include <iostream>
 #include <variant>
 #include <optional>
 #include <string>
@@ -105,14 +104,11 @@ public:
 
   inline void insert_varuint(uint64_t vuit) {
     buffer.reserve(buffer.size() + vuit + 16);
-    std::cout << "size: " << vuit << std::endl;
     while (true) {
       if (vuit < 128) {
-        std::cout << vuit << std::endl;
         buffer += (unsigned char) vuit;
         break;
       }
-      std::cout << (0b10000000 | (vuit & 0b01111111)) << std::endl;
       buffer += (unsigned char) (0b10000000 | (vuit & 0b01111111));
       vuit >>= 7;
     }
