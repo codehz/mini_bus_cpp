@@ -216,7 +216,7 @@ class MiniBusClient {
   std::mutex mtx;
   std::map<uint64_t, std::shared_ptr<NotifyToken<std::optional<std::string>>>> reqmap;
   std::map<uint64_t, std::function<void(std::optional<std::string>)>> evtmap;
-  std::map<std::string, std::function<std::string_view(std::string_view)>, std::less<>> fnmap;
+  std::map<std::string, std::function<std::string(std::string_view)>, std::less<>> fnmap;
   ip::tcp::socket socket;
   std::unique_ptr<std::thread> work_thread;
 
@@ -340,7 +340,7 @@ public:
     if (work_thread && work_thread->joinable()) work_thread->join();
   }
 
-  inline void register_handler(std::string const &name, std::function<std::string_view(std::string_view)> fn) {
+  inline void register_handler(std::string const &name, std::function<std::string(std::string_view)> fn) {
     fnmap.emplace(name, fn);
   }
 
