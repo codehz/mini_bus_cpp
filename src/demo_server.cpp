@@ -10,8 +10,8 @@ int main(int argc, char *argv[]) {
     io_service service;
     MiniBusClient client{service, ip::address::from_string("127.0.0.1"), 4040};
     client.register_handler("echo", [](auto inp) { return std::string{inp}; });
-    client.set("registry", "demo", "(value will be ignored)");
-    client.set_private("key", "value");
+    client.set("registry", "demo", "(value will be ignored)")->wait();
+    client.set_private("key", "value")->wait();
     while (true) {
       std::this_thread::sleep_for(1s);
       client.notify("event", "notify");

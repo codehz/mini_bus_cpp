@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <condition_variable>
 #include <map>
 #include <random>
@@ -35,12 +36,22 @@ template <typename Stream, size_t size> inline size_t read_exactly(Stream &strea
 
 using namespace boost::asio;
 
-struct IBaseNotifyToken {
+template <typename T> struct IBaseNotifyToken {
+  IBaseNotifyToken()                         = default;
+  IBaseNotifyToken(IBaseNotifyToken const &) = delete;
+  IBaseNotifyToken(IBaseNotifyToken &&)      = default;
+  IBaseNotifyToken &operator=(IBaseNotifyToken const &) = delete;
+  IBaseNotifyToken &operator=(IBaseNotifyToken &&) = default;
   inline virtual ~IBaseNotifyToken() {}
+  virtual T wait() = 0;
+};
+
+template <typename T> struct INotifyToken : virtual IBaseNotifyToken<T> {
+  virtual void notify(T &&)                   = 0;
   virtual void failed(std::exception_ptr ptr) = 0;
 };
 
-template <typename T> struct INotifyToken : virtual IBaseNotifyToken { virtual void notify(T &&) = 0; };
+template <typename T, typename F> class TransformNotifyToken;
 
 template <typename T> class NotifyToken : public INotifyToken<T> {
 protected:
@@ -55,7 +66,7 @@ public:
     value.reset();
     ex = nullptr;
   }
-  inline T wait() {
+  inline T wait() override {
     std::unique_lock lock{mtx};
     cv.wait(lock, [this] { return ex || value.has_value(); });
     if (ex) std::rethrow_exception(ex);
@@ -76,6 +87,31 @@ public:
     cv.notify_one();
   }
 };
+
+template <typename T, typename F>
+class TransformNotifyToken : public IBaseNotifyToken<decltype(std::declval<F>()(std::declval<T>()))> {
+public:
+  using ResultType = decltype(std::declval<F>()(std::declval<T>()));
+
+private:
+  std::shared_ptr<IBaseNotifyToken<T>> orig;
+  F func;
+
+public:
+  TransformNotifyToken(std::shared_ptr<IBaseNotifyToken<T>> &&orig, F &&func)
+      : orig(std::move(orig)), func(std::move(func)) {}
+
+  inline ResultType wait() override { return func(orig->wait()); }
+};
+
+template <typename T, typename F>
+TransformNotifyToken(std::shared_ptr<IBaseNotifyToken<T>> &&orig, F &&func) -> TransformNotifyToken<T, F>;
+
+template <typename T, typename F>
+std::shared_ptr<IBaseNotifyToken<decltype(std::declval<F>()(std::declval<T>()))>>
+operator>>(std::shared_ptr<IBaseNotifyToken<T>> &&orig, F &&func) {
+  return std::make_unique<TransformNotifyToken<T, F>>(std::move(orig), std::move(func));
+}
 
 template <typename T> class SyncNotifyToken : public NotifyToken<T> {
 public:
@@ -210,7 +246,7 @@ class MiniBusClient {
   std::random_device rd;
   std::uniform_int_distribution<uint32_t> dist;
   std::mutex mtx;
-  std::map<uint64_t, std::shared_ptr<NotifyToken<std::optional<std::string>>>> reqmap;
+  std::map<uint64_t, std::weak_ptr<NotifyToken<std::optional<std::string>>>> reqmap;
   std::map<uint64_t, std::function<void(std::optional<std::string>)>> evtmap;
   std::map<std::string, std::function<std::string(std::string_view)>, std::less<>> fnmap;
   ip::tcp::socket socket;
@@ -224,7 +260,7 @@ class MiniBusClient {
     }
   }
 
-  inline std::shared_ptr<NotifyToken<std::optional<std::string>>>
+  inline std::shared_ptr<IBaseNotifyToken<std::optional<std::string>>>
   send_simple(std::string_view command, std::string_view payload = {}) {
     std::unique_lock lock{mtx};
     auto rid = select_rid();
@@ -276,9 +312,9 @@ class MiniBusClient {
           auto [k, v] = *it;
           reqmap.erase(it);
           if (data.pkt.ok()) {
-            v->notify(std::move(data.pkt.payload()));
+            if (auto ptr = v.lock()) ptr->notify(std::move(data.pkt.payload()));
           } else {
-            v->failed(std::make_exception_ptr(MiniBusException{*data.pkt.payload()}));
+            if (auto ptr = v.lock()) ptr->failed(std::make_exception_ptr(MiniBusException{*data.pkt.payload()}));
           }
         } break;
         case details::repr("NEXT"): {
@@ -309,7 +345,8 @@ class MiniBusClient {
       }
     } catch (...) {}
 
-    for (auto &[k, v] : reqmap) v->failed(std::make_exception_ptr(std::runtime_error{"closed"}));
+    for (auto &[k, v] : reqmap)
+      if (auto ptr = v.lock()) ptr->failed(std::make_exception_ptr(std::runtime_error{"closed"}));
   }
 
 public:
@@ -340,33 +377,37 @@ public:
     fnmap.emplace(name, fn);
   }
 
-  inline std::string ping(std::string_view payload = {}) { return *send_simple("PING", payload)->wait(); }
+  inline std::shared_ptr<IBaseNotifyToken<bool>> ping(std::string_view payload = {}) {
+    return send_simple("PING", payload) >> [=](std::optional<std::string> str) { return str == payload; };
+  }
 
-  inline void stop() { send_simple("STOP")->wait(); }
+  inline std::shared_ptr<IBaseNotifyToken<void>> stop() {
+    return send_simple("STOP") >> [](std::optional<std::string> str) { return; };
+  }
 
-  inline void set_private(std::string_view key, std::string_view value) {
+  inline std::shared_ptr<IBaseNotifyToken<void>> set_private(std::string_view key, std::string_view value) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     oss << value;
     auto buf = oss.str();
-    send_simple("SET PRIVATE", buf)->wait();
+    return send_simple("SET PRIVATE", buf) >> [](std::optional<std::string> str) { return; };
   }
 
-  inline std::string get_private(std::string_view key) {
+  inline std::shared_ptr<IBaseNotifyToken<std::optional<std::string>>> get_private(std::string_view key) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     auto buf = oss.str();
-    return *send_simple("GET PRIVATE", buf)->wait();
+    return send_simple("GET PRIVATE", buf);
   }
 
-  inline void del_private(std::string_view key) {
+  inline std::shared_ptr<IBaseNotifyToken<void>> del_private(std::string_view key) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     auto buf = oss.str();
-    send_simple("DEL PRIVATE", buf)->wait();
+    return send_simple("DEL PRIVATE", buf) >> [](std::optional<std::string> str) { return; };
   }
 
-  inline void acl(std::string_view key, ACL acl) {
+  inline std::shared_ptr<IBaseNotifyToken<void>> acl(std::string_view key, ACL acl) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     switch (acl) {
@@ -376,77 +417,81 @@ public:
     default: throw std::invalid_argument("Invalid ACL");
     }
     auto buf = oss.str();
-    send_simple("DEL PRIVATE", buf)->wait();
+    return send_simple("DEL PRIVATE", buf) >> [](std::optional<std::string> str) { return; };
   }
 
-  inline void notify(std::string_view key, std::string_view value) {
+  inline std::shared_ptr<IBaseNotifyToken<void>> notify(std::string_view key, std::string_view value) {
     std::ostringstream oss;
     oss << (unsigned char) key.length() << key;
     oss << value;
     auto buf = oss.str();
-    send_simple("NOTIFY", buf)->wait();
+    return send_simple("NOTIFY", buf) >> [](std::optional<std::string> str) { return; };
   }
 
-  inline void set(std::string_view bucket, std::string_view key, std::string_view value) {
-    std::ostringstream oss;
-    oss << (unsigned char) bucket.length() << bucket;
-    oss << (unsigned char) key.length() << key;
-    oss << value;
-    auto buf = oss.str();
-    send_simple("SET", buf)->wait();
-  }
-
-  inline std::string get(std::string_view bucket, std::string_view key) {
-    std::ostringstream oss;
-    oss << (unsigned char) bucket.length() << bucket;
-    oss << (unsigned char) key.length() << key;
-    auto buf = oss.str();
-    return *send_simple("GET", buf)->wait();
-  }
-
-  inline void del(std::string_view bucket, std::string_view key) {
-    std::ostringstream oss;
-    oss << (unsigned char) bucket.length() << bucket;
-    oss << (unsigned char) key.length() << key;
-    auto buf = oss.str();
-    send_simple("DEL", buf)->wait();
-  }
-
-  inline std::list<std::tuple<ACL, std::string>> keys(std::string_view bucket) {
-    std::ostringstream oss;
-    oss << (unsigned char) bucket.length() << bucket;
-    auto buf = oss.str();
-    auto res = *send_simple("KEYS", buf)->wait();
-    std::istringstream iss{res};
-    std::list<std::tuple<ACL, std::string>> ret;
-    while (true) {
-      ACL acl;
-      unsigned char len;
-      iss >> len;
-      if (!iss) break;
-      char buf[16] = {};
-      iss.read(buf, len);
-      if (strcmp(buf, "private") == 0)
-        acl = ACL::Private;
-      else if (strcmp(buf, "protected") == 0)
-        acl = ACL::Protected;
-      else if (strcmp(buf, "public") == 0)
-        acl = ACL::Public;
-      iss >> len;
-      char key[256];
-      iss.read(key, len);
-      ret.emplace_back(acl, std::string{key, (size_t) len});
-    }
-    return ret;
-  }
-
-  inline std::string call(std::string_view bucket, std::string_view key, std::string_view value) {
+  inline std::shared_ptr<IBaseNotifyToken<void>>
+  set(std::string_view bucket, std::string_view key, std::string_view value) {
     std::ostringstream oss;
     oss << (unsigned char) bucket.length() << bucket;
     oss << (unsigned char) key.length() << key;
     oss << value;
     auto buf = oss.str();
-    return *send_simple("CALL", buf)->wait();
+    return send_simple("SET", buf) >> [](std::optional<std::string> str) { return; };
+  }
+
+  inline std::shared_ptr<IBaseNotifyToken<std::optional<std::string>>>
+  get(std::string_view bucket, std::string_view key) {
+    std::ostringstream oss;
+    oss << (unsigned char) bucket.length() << bucket;
+    oss << (unsigned char) key.length() << key;
+    auto buf = oss.str();
+    return send_simple("GET", buf);
+  }
+
+  inline std::shared_ptr<IBaseNotifyToken<void>> del(std::string_view bucket, std::string_view key) {
+    std::ostringstream oss;
+    oss << (unsigned char) bucket.length() << bucket;
+    oss << (unsigned char) key.length() << key;
+    auto buf = oss.str();
+    return send_simple("DEL", buf) >> [](std::optional<std::string> str) { return; };
+  }
+
+  inline std::shared_ptr<IBaseNotifyToken<std::list<std::tuple<ACL, std::string>>>> keys(std::string_view bucket) {
+    std::ostringstream oss;
+    oss << (unsigned char) bucket.length() << bucket;
+    auto buf = oss.str();
+    return send_simple("KEYS", buf) >> [](std::optional<std::string> res) -> std::list<std::tuple<ACL, std::string>> {
+      std::istringstream iss{*res};
+      std::list<std::tuple<ACL, std::string>> ret;
+      while (true) {
+        ACL acl;
+        unsigned char len;
+        iss >> len;
+        if (!iss) break;
+        char buf[16] = {};
+        iss.read(buf, len);
+        if (strcmp(buf, "private") == 0)
+          acl = ACL::Private;
+        else if (strcmp(buf, "protected") == 0)
+          acl = ACL::Protected;
+        else if (strcmp(buf, "public") == 0)
+          acl = ACL::Public;
+        iss >> len;
+        char key[256];
+        iss.read(key, len);
+        ret.emplace_back(acl, std::string{key, (size_t) len});
+      }
+      return ret;
+    };
+  }
+
+  inline std::shared_ptr<IBaseNotifyToken<std::optional<std::string>>>
+  call(std::string_view bucket, std::string_view key, std::string_view value) {
+    std::ostringstream oss;
+    oss << (unsigned char) bucket.length() << bucket;
+    oss << (unsigned char) key.length() << key;
+    oss << value;
+    auto buf = oss.str();
+    return send_simple("CALL", buf);
   }
 
   inline void

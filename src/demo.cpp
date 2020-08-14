@@ -15,13 +15,13 @@ int main(int argc, char *argv[]) {
       if (sv) std::cout << "update: " << *sv << std::endl;
     });
 
-    client.ping(std::string(1024, 'a'));
-    client.set("shared", "key", "value");
-    std::cout << "v: " << client.get("shared", "key") << std::endl;
+    client.ping(std::string(1024, 'a'))->wait();
+    client.set("shared", "key", "value")->wait();
+    std::cout << "v: " << *client.get("shared", "key")->wait() << std::endl;
 
     std::cout << "here" << std::endl;
 
-    for (auto &[k, v] : client.keys("shared")) { std::cout << "kv: " << v << (int) k << std::endl; }
+    for (auto &[k, v] : client.keys("shared")->wait()) { std::cout << "kv: " << v << (int) k << std::endl; }
 
     client.listen("demo", "event", [](auto data) {
       if (data) std::cout << "event: " << *data << std::endl;
@@ -30,7 +30,7 @@ int main(int argc, char *argv[]) {
     NotifyToken<int> tok;
 
     try {
-      client.get("registry", "demo");
+      client.get("registry", "demo")->wait();
     } catch (...) {
       std::cout << "waiting" << std::endl;
       NotifyToken<int> tok;
@@ -38,7 +38,7 @@ int main(int argc, char *argv[]) {
       tok.wait();
     }
 
-    std::cout << "call" << client.call("demo", "echo", "boom") << std::endl;
+    std::cout << "call" << *client.call("demo", "echo", "boom")->wait() << std::endl;
 
     std::this_thread::sleep_for(10s);
   } catch (std::exception &e) { std::cout << e.what() << std::endl; }
