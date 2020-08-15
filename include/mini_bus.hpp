@@ -372,7 +372,7 @@ class MiniBusClient {
 
   inline void worker() {
     while (is_running) {
-      socket = std::move(info->create_connected_socket());
+      socket = info->create_connected_socket();
       if (!socket) {
         if (info->disconnected(true))
           continue;
