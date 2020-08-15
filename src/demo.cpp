@@ -8,7 +8,8 @@ int main(int argc, char *argv[]) {
   using namespace std::chrono_literals;
   try {
     io_service service;
-    MiniBusClient client{service, ip::address::from_string("127.0.0.1"), 4040};
+    MiniBusClient client{
+        std::make_unique<BasicConnectionInfo>(service, ip::tcp::endpoint{ip::address::from_string("127.0.0.1"), 4040})};
     std::cout << "connected" << std::endl;
 
     client.observe("shared", "key", [](auto sv) {

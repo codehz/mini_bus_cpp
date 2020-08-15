@@ -46,8 +46,13 @@ template <typename T> struct IBaseNotifyToken {
   virtual T wait() = 0;
 };
 
-template <typename T> struct INotifyToken : virtual IBaseNotifyToken<T> {
+template <typename T> struct INotifyToken : IBaseNotifyToken<T> {
   virtual void notify(T &&)                   = 0;
+  virtual void failed(std::exception_ptr ptr) = 0;
+};
+
+template <> struct INotifyToken<void> : IBaseNotifyToken<void> {
+  virtual void notify()                       = 0;
   virtual void failed(std::exception_ptr ptr) = 0;
 };
 
@@ -76,6 +81,41 @@ public:
     {
       std::lock_guard lock{mtx};
       value.emplace(std::move(rhs));
+    }
+    cv.notify_one();
+  }
+  inline void failed(std::exception_ptr ptr) override {
+    {
+      std::lock_guard lock{mtx};
+      ex = ptr;
+    }
+    cv.notify_one();
+  }
+};
+
+template <> class NotifyToken<void> : public INotifyToken<void> {
+protected:
+  std::mutex mtx;
+  std::condition_variable cv;
+  bool notified;
+  std::exception_ptr ex;
+
+public:
+  inline void reset() {
+    std::lock_guard lock{mtx};
+    notified = false;
+    ex       = nullptr;
+  }
+  inline void wait() override {
+    std::unique_lock lock{mtx};
+    cv.wait(lock, [this] { return ex || notified; });
+    if (ex) std::rethrow_exception(ex);
+    return;
+  }
+  inline void notify() override {
+    {
+      std::lock_guard lock{mtx};
+      notified = true;
     }
     cv.notify_one();
   }
@@ -242,14 +282,44 @@ public:
   }
 };
 
+class MiniBusClient;
+
+struct ConnectionInfo {
+  virtual ~ConnectionInfo()                                        = default;
+  virtual std::optional<ip::tcp::socket> create_connected_socket() = 0;
+  virtual void connected(MiniBusClient *)                          = 0;
+  virtual bool disconnected(bool imm) { return false; }
+};
+
+class BasicConnectionInfo : public ConnectionInfo {
+  io_service &io;
+  ip::tcp::endpoint endpoint;
+  std::shared_ptr<NotifyToken<void>> token;
+
+public:
+  BasicConnectionInfo(io_service &io, ip::tcp::endpoint const &endpoint) : io(io), endpoint(endpoint) {}
+
+  std::optional<ip::tcp::socket> create_connected_socket() override {
+    try {
+      ip::tcp::socket ret{io};
+      ret.connect(endpoint);
+      return {std::move(ret)};
+    } catch (boost::system::system_error err) { return std::nullopt; };
+  }
+  void connected(MiniBusClient *) override { token->notify(); }
+};
+
 class MiniBusClient {
+  std::atomic<bool> is_running;
+  std::unique_ptr<ConnectionInfo> info;
+  std::function<void()> connected;
   std::random_device rd;
   std::uniform_int_distribution<uint32_t> dist;
   std::mutex mtx;
   std::map<uint64_t, std::weak_ptr<NotifyToken<std::optional<std::string>>>> reqmap;
   std::map<uint64_t, std::function<void(std::optional<std::string>)>> evtmap;
   std::map<std::string, std::function<std::string(std::string_view)>, std::less<>> fnmap;
-  ip::tcp::socket socket;
+  std::optional<ip::tcp::socket> socket;
   std::unique_ptr<std::thread> work_thread;
 
   inline uint32_t select_rid() {
@@ -269,7 +339,7 @@ class MiniBusClient {
     encoder.insert_short_string(command);
     encoder.insert_long_string(payload);
     auto view = encoder.view();
-    write(socket, buffer(view), transfer_all());
+    write(*socket, buffer(view), transfer_all());
     auto tok = std::make_shared<NotifyToken<std::optional<std::string>>>();
     reqmap.emplace(rid, tok);
     return tok;
@@ -284,7 +354,7 @@ class MiniBusClient {
     encoder.insert_short_string(command);
     encoder.insert_long_string(payload);
     auto view = encoder.view();
-    write(socket, buffer(view), transfer_all());
+    write(*socket, buffer(view), transfer_all());
     auto tok = std::make_shared<SyncNotifyToken<std::optional<std::string>>>();
     reqmap.emplace(rid, tok);
     return tok;
@@ -296,57 +366,82 @@ class MiniBusClient {
     encoder.insert_short_string(command);
     encoder.insert_long_string(payload);
     auto view = encoder.view();
-    write(socket, buffer(view), transfer_all());
+    write(*socket, buffer(view), transfer_all());
   }
 
   inline void worker() {
-    try {
-      MiniBusPacketDecoder decoder{socket};
-      while (true) {
-        auto data = decoder.decode();
-        std::lock_guard lock{mtx};
-        switch (data.type) {
-        case details::repr("RESP"): {
-          auto it = reqmap.find(data.rid);
-          if (it == reqmap.end()) continue;
-          auto [k, v] = *it;
-          reqmap.erase(it);
-          if (data.pkt.ok()) {
-            if (auto ptr = v.lock()) ptr->notify(std::move(data.pkt.payload()));
-          } else {
-            if (auto ptr = v.lock()) ptr->failed(std::make_exception_ptr(MiniBusException{*data.pkt.payload()}));
-          }
-        } break;
-        case details::repr("NEXT"): {
-          if (data.pkt.ok()) {
-            evtmap[data.rid](data.pkt.payload());
-          } else {
-            evtmap.erase(data.rid);
-          }
-        } break;
-        case details::repr("CALL"): {
-          std::string_view sv = *data.pkt.payload();
-          if (sv.length() < 1) throw std::runtime_error("Unexcepted call");
-          auto len = sv[0];
-          sv.remove_prefix(1);
-          if (sv.length() < len) throw std::runtime_error("Unexcepted call");
-          auto it = fnmap.find(sv.substr(0, len));
-          if (it == fnmap.end()) {
-            send_response(data.rid, "EXCEPTION", "Not found");
-            continue;
-          }
-          sv.remove_prefix(len);
-          try {
-            auto ret = it->second(sv);
-            send_response(data.rid, "RESPONSE", ret);
-          } catch (std::runtime_error const &e) { send_response(data.rid, "EXCEPTION", e.what()); }
-        } break;
-        }
+    while (is_running) {
+      socket = std::move(info->create_connected_socket());
+      if (!socket) {
+        if (info->disconnected(true))
+          continue;
+        else
+          break;
       }
-    } catch (...) {}
+      write(*socket, buffer("MINIBUS"), transfer_all());
+      char ok[2];
+      details::read_exactly(*socket, ok);
+      if (memcmp(&ok[0], "OK", 2) != 0) {
+        socket.reset();
+        if (info->disconnected(true))
+          continue;
+        else
+          break;
+      }
+      try {
+        MiniBusPacketDecoder decoder{*socket};
+        while (true) {
+          auto data = decoder.decode();
+          std::lock_guard lock{mtx};
+          switch (data.type) {
+          case details::repr("RESP"): {
+            auto it = reqmap.find(data.rid);
+            if (it == reqmap.end()) continue;
+            auto [k, v] = *it;
+            reqmap.erase(it);
+            if (data.pkt.ok()) {
+              if (auto ptr = v.lock()) ptr->notify(std::move(data.pkt.payload()));
+            } else {
+              if (auto ptr = v.lock()) ptr->failed(std::make_exception_ptr(MiniBusException{*data.pkt.payload()}));
+            }
+          } break;
+          case details::repr("NEXT"): {
+            if (data.pkt.ok()) {
+              evtmap[data.rid](data.pkt.payload());
+            } else {
+              evtmap.erase(data.rid);
+            }
+          } break;
+          case details::repr("CALL"): {
+            std::string_view sv = *data.pkt.payload();
+            if (sv.length() < 1) throw std::runtime_error("Unexcepted call");
+            auto len = sv[0];
+            sv.remove_prefix(1);
+            if (sv.length() < len) throw std::runtime_error("Unexcepted call");
+            auto it = fnmap.find(sv.substr(0, len));
+            if (it == fnmap.end()) {
+              send_response(data.rid, "EXCEPTION", "Not found");
+              continue;
+            }
+            sv.remove_prefix(len);
+            try {
+              auto ret = it->second(sv);
+              send_response(data.rid, "RESPONSE", ret);
+            } catch (std::runtime_error const &e) { send_response(data.rid, "EXCEPTION", e.what()); }
+          } break;
+          }
+        }
+      } catch (...) {}
 
-    for (auto &[k, v] : reqmap)
-      if (auto ptr = v.lock()) ptr->failed(std::make_exception_ptr(std::runtime_error{"closed"}));
+      for (auto &[k, v] : reqmap)
+        if (auto ptr = v.lock()) ptr->failed(std::make_exception_ptr(std::runtime_error{"closed"}));
+
+      socket.reset();
+      if (info->disconnected(false))
+        continue;
+      else
+        break;
+    }
   }
 
 public:
@@ -356,20 +451,14 @@ public:
     Public,
   };
 
-  inline MiniBusClient(io_service &io, ip::address address, unsigned short port) : socket(io) {
-    socket.connect(ip::tcp::endpoint{address, port});
-
-    write(socket, buffer("MINIBUS"), transfer_all());
-    char ok[2];
-    details::read_exactly(socket, ok);
-    if (memcmp(&ok[0], "OK", 2) != 0) throw std::runtime_error{"ProtocolError"};
-
+  inline MiniBusClient(std::unique_ptr<ConnectionInfo> info) : info(std::move(info)) {
     work_thread = std::make_unique<std::thread>([this] { worker(); });
   }
 
   inline ~MiniBusClient() {
     boost::system::error_code ec;
-    socket.close(ec);
+    is_running = false;
+    socket->close(ec);
     if (work_thread && work_thread->joinable()) work_thread->join();
   }
 
@@ -382,6 +471,7 @@ public:
   }
 
   inline std::shared_ptr<IBaseNotifyToken<void>> stop() {
+    is_running = false;
     return send_simple("STOP") >> [](std::optional<std::string> str) { return; };
   }
 
