@@ -307,11 +307,12 @@ public:
     } catch (boost::system::system_error err) { return std::nullopt; };
   }
   void connected(MiniBusClient *) override { token->notify(); }
+  void wait() { token->wait(); }
 };
 
 class MiniBusClient {
-  std::atomic<bool> is_running;
-  std::unique_ptr<ConnectionInfo> info;
+  std::atomic<bool> is_running = true;
+  std::shared_ptr<ConnectionInfo> info;
   std::function<void()> connected;
   std::random_device rd;
   std::uniform_int_distribution<uint32_t> dist;
@@ -451,7 +452,7 @@ public:
     Public,
   };
 
-  inline MiniBusClient(std::unique_ptr<ConnectionInfo> info) : info(std::move(info)) {
+  inline MiniBusClient(std::shared_ptr<ConnectionInfo> info) : info(std::move(info)) {
     work_thread = std::make_unique<std::thread>([this] { worker(); });
   }
 
