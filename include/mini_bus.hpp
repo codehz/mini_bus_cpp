@@ -459,8 +459,11 @@ public:
   inline ~MiniBusClient() {
     boost::system::error_code ec;
     is_running = false;
-    socket->close(ec);
-    if (work_thread && work_thread->joinable()) work_thread->join();
+    if (socket) {
+      socket->close(ec);
+      if (work_thread && work_thread->joinable()) work_thread->join();
+    } else if (work_thread && work_thread->joinable())
+      work_thread->detach();
   }
 
   inline void register_handler(std::string const &name, std::function<std::string(std::string_view)> fn) {
