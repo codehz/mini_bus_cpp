@@ -313,7 +313,6 @@ public:
 class MiniBusClient {
   std::atomic<bool> is_running = true;
   std::shared_ptr<ConnectionInfo> info;
-  std::function<void()> connected;
   std::random_device rd;
   std::uniform_int_distribution<uint32_t> dist;
   std::mutex mtx;
@@ -389,6 +388,7 @@ class MiniBusClient {
         else
           break;
       }
+      info->connected(this);
       try {
         MiniBusPacketDecoder decoder{*socket};
         while (true) {
@@ -438,6 +438,7 @@ class MiniBusClient {
         if (auto ptr = v.lock()) ptr->failed(std::make_exception_ptr(std::runtime_error{"closed"}));
 
       socket.reset();
+      if (!is_running) return;
       if (info->disconnected(false))
         continue;
       else
