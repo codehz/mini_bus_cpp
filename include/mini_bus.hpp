@@ -467,6 +467,10 @@ public:
       work_thread->detach();
   }
 
+  inline operator bool() {
+    return !!socket;
+  }
+
   inline void register_handler(std::string const &name, std::function<std::string(std::string_view)> fn) {
     fnmap.emplace(name, fn);
   }
