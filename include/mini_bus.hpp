@@ -1,5 +1,6 @@
 #include <sstream>
 #include <variant>
+#include <stdexcept>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -311,14 +312,20 @@ public:
 };
 
 class MiniBusClient {
+public:
+  using CallResult = std::variant<std::string_view, std::runtime_error>;
+
+  template <typename... Ts> using Receiver = std::function<void(Ts...)>;
+
+private:
   std::atomic<bool> is_running = true;
   std::shared_ptr<ConnectionInfo> info;
   std::random_device rd;
   std::uniform_int_distribution<uint32_t> dist;
   std::mutex mtx;
   std::map<uint64_t, std::weak_ptr<NotifyToken<std::optional<std::string>>>> reqmap;
-  std::map<uint64_t, std::function<void(std::optional<std::string>)>> evtmap;
-  std::map<std::string, std::function<std::string(std::string_view)>, std::less<>> fnmap;
+  std::map<uint64_t, Receiver<std::optional<std::string>>> evtmap;
+  std::map<std::string, Receiver<std::string_view, Receiver<CallResult>>, std::less<>> fnmap;
   std::optional<ip::tcp::socket> socket;
   std::unique_ptr<std::thread> work_thread;
 
@@ -425,10 +432,17 @@ class MiniBusClient {
               continue;
             }
             sv.remove_prefix(len);
-            try {
-              auto ret = it->second(sv);
-              send_response(data.rid, "RESPONSE", ret);
-            } catch (std::runtime_error const &e) { send_response(data.rid, "EXCEPTION", e.what()); }
+            it->second(sv, [rid = data.rid, this](CallResult res) {
+              std::visit(
+                  [&](auto x) {
+                    if constexpr (std::is_same_v<decltype(x), std::string_view>) {
+                      send_response(rid, "RESPONSE", x);
+                    } else {
+                      send_response(rid, "EXCEPTION", x.what());
+                    }
+                  },
+                  res);
+            });
           } break;
           }
         }
@@ -467,12 +481,18 @@ public:
       work_thread->detach();
   }
 
-  inline operator bool() {
-    return !!socket;
-  }
+  inline operator bool() { return !!socket; }
 
-  inline void register_handler(std::string const &name, std::function<std::string(std::string_view)> fn) {
+  inline void register_handler(std::string const &name, Receiver<std::string_view, Receiver<CallResult>> fn) {
     fnmap.emplace(name, fn);
+  }
+  inline void register_handler(std::string const &name, std::function<std::string(std::string_view)> fn) {
+    fnmap.emplace(name, [=](auto inp, auto recv) {
+      try {
+        auto ret = fn(inp);
+        recv(ret);
+      } catch (std::runtime_error const &e) { recv(e); }
+    });
   }
 
   inline std::shared_ptr<IBaseNotifyToken<bool>> ping(std::string_view payload = {}) {
